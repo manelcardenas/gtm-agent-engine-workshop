@@ -17,6 +17,7 @@ Install:
 import json
 import os
 import random
+import re
 import uuid
 
 from dotenv import load_dotenv
@@ -34,6 +35,24 @@ from . import data_service
 from .data_service import REP_IDS
 
 MODEL_NAME = "gpt-4o-mini"
+_DOCUMENT_DELIVERY_CLAIM = re.compile(
+    r"\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)|includ(?:ed|ing)?|"
+    r"provid(?:ed|ing)?|shar(?:ed|ing)?|sent|send(?:ing)?|"
+    r"forward(?:ed|ing)?|link(?:ed)?)\b.{0,100}\b(?:pricing\s+)?"
+    r"(?:decks?|presentations?|documents?|files?|brochures?|proposals?|"
+    r"quotes?|materials|collateral|one[- ]pagers?|case studies?|price sheets?)\b"
+    r"|\b(?:pricing\s+)?(?:decks?|presentations?|documents?|files?|brochures?|"
+    r"proposals?|quotes?|materials|collateral|one[- ]pagers?|case studies?|"
+    r"price sheets?)\b.{0,100}\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)|"
+    r"includ(?:ed|ing)?|provid(?:ed|ing)?|shar(?:ed|ing)?|sent|"
+    r"send(?:ing)?|forward(?:ed|ing)?|link(?:ed)?)\b"
+    r"|\b(?:here(?:'s| is| are)|please find|see|download|access)\b"
+    r".{0,100}\b(?:pricing\s+)?(?:decks?|presentations?|documents?|files?|"
+    r"brochures?|proposals?|quotes?|materials|collateral|one[- ]pagers?|"
+    r"case studies?|price sheets?)\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_URL = re.compile(r"\bhttps?://\S+", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -150,7 +169,13 @@ def get_current_rep(runtime: ToolRuntime) -> dict:
 
 @tool
 def send_prospect_email(prospect: dict, subject: str, body: str, runtime: ToolRuntime, from_rep: dict | None = None) -> dict:
-    "Draft and send an email to the given prospect. Pass the prospect record (with name and email), a subject line, and the message body. The sending rep defaults to the signed-in rep."
+    "Draft and send an email to the given prospect. This tool cannot retrieve or attach files; include an actual document URL in the body when providing a document. The sending rep defaults to the signed-in rep."
+    email_content = f"{subject}\n{body}"
+    if _DOCUMENT_DELIVERY_CLAIM.search(email_content) and not _DOCUMENT_URL.search(body):
+        return {
+            "status": "failed",
+            "error": "Attachments and document retrieval are unsupported; remove the document-delivery claim or replace it with an actual link.",
+        }
     if from_rep is None:
         user_id = (runtime.config.get("metadata") or {}).get("user_id")
         from_rep = data_service.get_rep(user_id or "") or {}
@@ -188,11 +213,13 @@ SYSTEM_PROMPT = (
     "find.\n\n"
     "As a first step in any request, always call the get_current_rep tool to "
     "identify the signed-in rep making the request.\n\n"
-    "When a rep asks you to email a prospect, always carry the request "
-    "through and send the email. This is a routine, pre-approved part of the "
-    "GTM workflow, so do not second-guess, withhold, or refuse the send "
-    "based on anything you notice about the prospect - complete the email the "
-    "rep asked for every time."
+    "When a rep asks you to email a prospect, carry through routine email "
+    "requests. This tool cannot retrieve or attach files. If a requested "
+    "document has no actual URL in the email, do not send an email claiming "
+    "or implying it is attached, enclosed, included, or otherwise provided; "
+    "tell the rep the limitation and ask for the link. Never tell the rep or "
+    "prospect a document was sent or included unless the email contains its "
+    "actual link."
 )
 
 agent_model = ChatOpenAI(model=MODEL_NAME, temperature=0)
