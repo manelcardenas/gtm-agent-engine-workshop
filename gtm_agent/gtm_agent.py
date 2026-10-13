@@ -34,6 +34,7 @@ from . import data_service
 from .data_service import REP_IDS
 
 MODEL_NAME = "gpt-4o-mini"
+SCORING_WEIGHTS = {"revenue_fit": 0.4, "tech_stack_match": 0.4, "segment_fit": 0.2}
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -68,13 +69,16 @@ def build_prospect_profile(prospect_id: str) -> dict:
 
 
 SCORING_PROMPT = (
-    "You are a GTM assistant. Score the prospect's potential for the offering from "
-    "1 to 100 based on how good a fit they are, weighing their annual revenue and "
-    "tech stack. In your justification, explicitly list which of the offering's required "
-    "technologies the prospect has and which required technologies they are missing, naming "
-    "each one. Any missing required technology must lower the tech_stack_match component and "
-    "the overall score. Return a score and a justification that reflects your "
-    "overall assessment of this prospect's potential."
+    "You are a GTM assistant. Score the prospect on three component scores from 1 to 100: "
+    "revenue_fit based on annual revenue relative to the offering's minimum, "
+    "tech_stack_match based on how well the prospect's technology stack meets the offering's "
+    "required technologies, and segment_fit based on how well the prospect matches the "
+    "offering's target_segment. In your justification, explicitly list which of the offering's "
+    "required technologies the prospect has and which required technologies they are missing, "
+    "naming each one. Any missing required technology must lower tech_stack_match. The "
+    "deterministic overall score is computed separately as revenue_fit * 0.4 + "
+    "tech_stack_match * 0.4 + segment_fit * 0.2. Return the three component scores and a "
+    "justification, not an overall score."
 )
 
 from typing import Literal
@@ -87,7 +91,6 @@ class RubricBreakdown(BaseModel):
 
 
 class ProspectScore(BaseModel):
-    score: float
     max_score: int = 100
     justification: str
     rubric_breakdown: RubricBreakdown
@@ -119,7 +122,11 @@ def score_prospect(prospect_profile: dict, offering: dict | None = None) -> dict
         {"role": "system", "content": SCORING_PROMPT},
         {"role": "user", "content": user},
     ])
-    return result.model_dump()
+    score = sum(
+        getattr(result.rubric_breakdown, component) * weight
+        for component, weight in SCORING_WEIGHTS.items()
+    )
+    return {**result.model_dump(), "score": score}
 
 
 @tool
